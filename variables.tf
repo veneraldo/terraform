@@ -32,3 +32,15 @@ variable "PRIVATE_SUBNET_CIDR_BLOCK" {
     default = [ "172.20.51.0/24", "172.20.52.0/24", "172.20.53.0/24"]
     description = "private subnet cidr list"
 }
+
+//variable "rds_subnet1" {
+  //default = "subnet-07714eb09171b1f7e"
+//}
+//variable "rds_subnet2" {
+  //default = "subnet-0cca9fdeb1b95003c"
+//}
+
+variable "DB_INSTANCE" {
+    type = string
+    default = "db.t2.micro"
+}
