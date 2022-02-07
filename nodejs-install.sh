@@ -1,13 +1,26 @@
-yum install -y gcc-c++ make 
-curl -sL https://rpm.nodesource.com/setup_14.x | sudo -E bash -
-yum install -y nodejs 
-
+#!/bin/bash
+apt update -y
+apt install nodejs -y
 cat > demo_server.js<< EOF
-var http = require('http');
-http.createServer(function (req, res) {
-  res.writeHead(200, {'Content-Type': 'text/plain'});
-  res.end('Welcome Node.js');
-}).listen(3000, "127.0.0.1");
-console.log('Server running at http://127.0.0.1:3000/');
+const http = require("http");
+const server = http.createServer((req, res) => {
+  const urlPath = req.url;
+  if (urlPath === "/overview") {
+    res.end('Welcome to the "overview page" of the node project');
+    } else if (urlPath === "/api") {
+     res.writeHead(200, { "Content-Type": "application/json" });
+     res.end(
+      JSON.stringify({
+       product_id: "xyz12u3",
+       product_name: "test api",
+	            })
+			    );
+      } else {
+         res.end("Successfully started a nodejs server");
+        }
+});
+server.listen(80, "0.0.0.0", () => {
+	  console.log("Listening for request");
+});
 EOF
-node --inspect demo_server.js 
+node --inspect demo_server.js & 

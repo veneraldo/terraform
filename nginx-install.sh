@@ -1,6 +1,7 @@
 #!/bin/bash
-yum -y install nginx git
-echo "Hello, from auto-scaling group nginx server" > /var/www/html/index.html
+amazon-linux-extras install nginx1 -y
+#yum -y install nginx
+echo "Test from auto-scaling group nginx" > /usr/share/nginx/html/index.html
 service nginx start
 #git clone project.git
 #cd project/html/

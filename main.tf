@@ -108,9 +108,6 @@ resource "aws_route_table_association" "private-subnet-assoc" {
 # create rds subnet group
 resource "aws_db_subnet_group" "rds-db-subnet-group" {
     name = "rds-db-subnet-group"
-    #count = length(var.PRIVATE_SUBNET_CIDR_BLOCK)
-    #subnet_ids = ["${var.rds_subnet1}", "${var.rds_subnet2}"]
-    #subnet_ids = [element(aws_subnet.private-subnet.*.id, count.index), ]
     subnet_ids = [element(aws_subnet.private-subnet.*.id, 0),element(aws_subnet.private-subnet.*.id,1)]
 }
 
@@ -139,7 +136,7 @@ resource "aws_security_group_rule" "rds-outbound-rule" {
     type = "egress"
     cidr_blocks = ["0.0.0.0/0"]
 }
-/*
+
 # create rds-mysql database
 resource "aws_db_instance" "rds-mysql" {
     instance_class = var.DB_INSTANCE
@@ -152,10 +149,6 @@ resource "aws_db_instance" "rds-mysql" {
     username = "admin"
     password = "admin123"
     apply_immediately = "true"
-        //backup_retention_period = 10
-        //backup_window  = "09:46-10:16"
-        //count = length(var.PRIVATE_SUBNET_CIDR_BLOCK)
-        //db_subnet_group_name = aws_db_subnet_group.rds-db-subnet-group[count.index].name
     db_subnet_group_name = "rds-db-subnet-group"
     vpc_security_group_ids  = ["${aws_security_group.rds-mysql-sg.id}"]
 }
@@ -170,7 +163,7 @@ resource "aws_elasticache_cluster" "venerms-redis-cluster" {
     engine_version  = "5.0.6"
     port = 6379
 }
-*/
+
 
 # create nginx proxy alb security group
 resource "aws_security_group" "nginx-proxy-alb-sg" {
@@ -263,8 +256,8 @@ resource "aws_alb_target_group" "nodejs-server-alb-tg" {
     health_check {
         healthy_threshold   = 3
         unhealthy_threshold = 10
-        timeout             = 5
-        interval            = 10
+        timeout             = 10
+        interval            = 20
         path                = "/api" 
         port                = "80"
     }
@@ -281,8 +274,20 @@ resource "aws_alb_listener" "nginx-proxy-alb-listener" {
         type  = "forward"
     }
 }
-# to do create listener for https with certificate
 
+/*
+# create listener for https with certificate
+resource "aws_alb_listener" "nginx-proxy-alb-listener-https" {
+    load_balancer_arn = aws_alb.nginx-proxy-alb.arn
+    port              = "443"
+    protocol          = "HTTPS"
+    certificate_arn   = "arn:aws:iam::123456789012:server-certificate/test_cert-123456789012"
+    default_action {
+        target_group_arn = aws_alb_target_group.nginx-server-alb-tg.arn
+        type  = "forward"
+    }
+}
+*/
 
 # create nginx proxy listener rule
 resource "aws_alb_listener_rule" "nginx-proxy-listener-rule" {
@@ -299,34 +304,6 @@ resource "aws_alb_listener_rule" "nginx-proxy-listener-rule" {
     }
 }
 
-/*
-# create listener rule
-resource "aws_alb_listener_rule" "nginx-proxy-listener-rule1" {
-    depends_on   = [aws_alb_target_group.nginx-proxy-alb-tg]
-    listener_arn = aws_alb_listener.nginx-proxy-alb-listener.arn
-    action {
-        type  = "forward"
-        target_group_arn = aws_alb_target_group.nginx-proxy-alb-tg.id
-    }
-    condition {
-        path_pattern {
-        values = ["*work*"]
-        }
-    }
-}
-
-resource "aws_instance" "nginx-reverse-proxy-instance" {
-    ami                    = "ami-067f5c3d5a99edc80"
-    instance_type          = "t2.micro"
-    key_name               = "venerms-key"
-    vpc_security_group_ids = ["sg-0dabbfc42efb67652"]
-    subnet_id              = "subnet-0e87d62c04db49b80"
-    user_data              = file("nginx-install.sh")
-    tags = {
-        Name = "nginx-reverse-proxy"
-    }
-}
-*/
 
 # create launch configuration for nginx web server
 resource "aws_launch_configuration" "nginx-web-asg-launch-config" {
@@ -334,14 +311,6 @@ resource "aws_launch_configuration" "nginx-web-asg-launch-config" {
     instance_type   = "t3.micro"
     security_groups = ["${aws_security_group.nginx-proxy-alb-sg.id}"]
     user_data  = file("nginx-install.sh")
-   /* user_data = <<-EOF
-              #!/bin/bash
-              yum -y install httpd
-              echo "Hello, from auto-scaling group nginx server" > /var/www/html/index.html
-              service httpd start
-              chkconfig httpd on
-              EOF
-    */ 
     lifecycle {
         create_before_destroy = true
     }
@@ -370,18 +339,10 @@ resource "aws_autoscaling_group" "nginx-server-asg" {
 
 # create launch configuration for nodejs web server
 resource "aws_launch_configuration" "nodejs-web-asg-launch-config" {
-    image_id        = "ami-07f179dc333499419"
+    image_id        = "ami-055d15d9cfddf7bd3"
     instance_type   = "t3.micro"
     security_groups = ["${aws_security_group.nginx-proxy-alb-sg.id}"]
-    user_data = <<-EOF
-              #!/bin/bash
-              yum -y install httpd
-              mkdir -p /var/www/html/api
-              echo "Hello, from auto-scaling group nodejs server" > /var/www/html/api/index.html
-              service httpd start
-              chkconfig httpd on
-              EOF
-
+    user_data  = file("nodejs-install.sh")
     lifecycle {
         create_before_destroy = true
     }
@@ -406,3 +367,116 @@ resource "aws_autoscaling_group" "nodejs-server-asg" {
         propagate_at_launch = true
     }
 }
+
+# create nginx server cpu scale up policy
+resource "aws_autoscaling_policy" "nginx-server-cpu-scale-up-policy" {
+    name                   = "nginx-server-cpu-scale-up-policy"
+    autoscaling_group_name = "${aws_autoscaling_group.nginx-server-asg.name}"
+    adjustment_type        = "ChangeInCapacity"
+    scaling_adjustment     = "1"
+    cooldown               = "300"
+    policy_type            = "SimpleScaling"
+}
+
+# create nginx server cpu scale down policy
+resource "aws_autoscaling_policy" "nginx-server-cpu-scale-down-policy" {
+    name                   = "nginx-server-cpu-policy"
+    autoscaling_group_name = "${aws_autoscaling_group.nginx-server-asg.name}"
+    adjustment_type        = "ChangeInCapacity"
+    scaling_adjustment     = "-1"
+    cooldown               = "300"
+    policy_type            = "SimpleScaling"
+}
+
+# create nginx server cloudwatch cpu scale-up alarm
+resource "aws_cloudwatch_metric_alarm" "nginx-server-cpu-scale-up-alarm" {
+    alarm_name          = "nginx-server-cpu-scale-up-alarm"
+    alarm_description   = "nginx-server-cpu-scale-up-alarm"
+    comparison_operator = "GreaterThanOrEqualToThreshold"
+    evaluation_periods  = "2"
+    metric_name         = "CPUUtilization"
+    namespace           = "AWS/EC2"
+    period              = "120"
+    statistic           = "Average"
+    threshold           = "30"
+    dimensions = {
+        "AutoScalingGroupName" = "${aws_autoscaling_group.nginx-server-asg.name}"
+    }
+    actions_enabled = true
+    alarm_actions   = ["${aws_autoscaling_policy.nginx-server-cpu-scale-up-policy.arn}"]
+}
+
+# create nginx server cloudwatch cpu scale-down alarm
+resource "aws_cloudwatch_metric_alarm" "nginx-server-cpu-scale-down-alarm" {
+    alarm_name          = "nginx-server-cpu-scale-down-alarm"
+    alarm_description   = "nginx-server-cpu-scale-down-alarm"
+    comparison_operator = "LessThanOrEqualToThreshold"
+    evaluation_periods  = "2"
+    metric_name         = "CPUUtilization"
+    namespace           = "AWS/EC2"
+    period              = "120"
+    statistic           = "Average"
+    threshold           = "5"
+    dimensions = {
+        "AutoScalingGroupName" = "${aws_autoscaling_group.nginx-server-asg.name}"
+    }
+    actions_enabled = true
+    alarm_actions   = ["${aws_autoscaling_policy.nginx-server-cpu-scale-down-policy.arn}"]
+}
+
+# create nodejs server cpu scale up policy
+resource "aws_autoscaling_policy" "nodejs-server-cpu-scale-up-policy" {
+    name                   = "nodejs-server-cpu-scale-up-policy"
+    autoscaling_group_name = "${aws_autoscaling_group.nodejs-server-asg.name}"
+    adjustment_type        = "ChangeInCapacity"
+    scaling_adjustment     = "1"
+    cooldown               = "300"
+    policy_type            = "SimpleScaling"
+}
+
+# create nodejs cpu scale down policy
+resource "aws_autoscaling_policy" "nodejs-server-cpu-scale-down-policy" {
+    name                   = "nodejs-server-cpu-policy"
+    autoscaling_group_name = "${aws_autoscaling_group.nodejs-server-asg.name}"
+    adjustment_type        = "ChangeInCapacity"
+    scaling_adjustment     = "-1"
+    cooldown               = "300"
+    policy_type            = "SimpleScaling"
+}
+
+# create nodejs cloudwatch cpu scale-up alarm
+resource "aws_cloudwatch_metric_alarm" "nodejs-server-cpu-scale-up-alarm" {
+    alarm_name          = "nodejs-server-cpu-scale-up-alarm"
+    alarm_description   = "nodejs-server-cpu-scale-up-alarm"
+    comparison_operator = "GreaterThanOrEqualToThreshold"
+    evaluation_periods  = "2"
+    metric_name         = "CPUUtilization"
+    namespace           = "AWS/EC2"
+    period              = "120"
+    statistic           = "Average"
+    threshold           = "30"
+    dimensions = {
+        "AutoScalingGroupName" = "${aws_autoscaling_group.nodejs-server-asg.name}"
+    }
+    actions_enabled = true
+    alarm_actions   = ["${aws_autoscaling_policy.nodejs-server-cpu-scale-up-policy.arn}"]
+}
+
+# create nodejs server cloudwatch cpu scale-down alarm
+resource "aws_cloudwatch_metric_alarm" "nodejs-server-cpu-scale-down-alarm" {
+    alarm_name          = "nodejs-server-cpu-scale-down-alarm"
+    alarm_description   = "nodejs-server-cpu-scale-down-alarm"
+    comparison_operator = "LessThanOrEqualToThreshold"
+    evaluation_periods  = "2"
+    metric_name         = "CPUUtilization"
+    namespace           = "AWS/EC2"
+    period              = "120"
+    statistic           = "Average"
+    threshold           = "5"
+    dimensions = {
+        "AutoScalingGroupName" = "${aws_autoscaling_group.nodejs-server-asg.name}"
+    }
+    actions_enabled = true
+    alarm_actions   = ["${aws_autoscaling_policy.nodejs-server-cpu-scale-down-policy.arn}"]
+}
+
