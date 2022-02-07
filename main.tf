@@ -265,7 +265,7 @@ resource "aws_alb_target_group" "nodejs-server-alb-tg" {
         unhealthy_threshold = 10
         timeout             = 5
         interval            = 10
-        path                = "/"  // may change to /api if needed
+        path                = "/api" 
         port                = "80"
     }
 }
@@ -333,21 +333,21 @@ resource "aws_launch_configuration" "nginx-web-asg-launch-config" {
     image_id        = "ami-07f179dc333499419"
     instance_type   = "t3.micro"
     security_groups = ["${aws_security_group.nginx-proxy-alb-sg.id}"]
-
-    user_data = <<-EOF
+    user_data  = file("nginx-install.sh")
+   /* user_data = <<-EOF
               #!/bin/bash
               yum -y install httpd
               echo "Hello, from auto-scaling group nginx server" > /var/www/html/index.html
               service httpd start
               chkconfig httpd on
               EOF
-
+    */ 
     lifecycle {
         create_before_destroy = true
     }
 }
 
-# create nginx autoscaling group
+# create nginx server autoscaling group
 resource "aws_autoscaling_group" "nginx-server-asg" {
     name                 = "nginx-server-asg"
     launch_configuration = aws_launch_configuration.nginx-web-asg-launch-config.name
@@ -368,3 +368,41 @@ resource "aws_autoscaling_group" "nginx-server-asg" {
     }
 }
 
+# create launch configuration for nodejs web server
+resource "aws_launch_configuration" "nodejs-web-asg-launch-config" {
+    image_id        = "ami-07f179dc333499419"
+    instance_type   = "t3.micro"
+    security_groups = ["${aws_security_group.nginx-proxy-alb-sg.id}"]
+    user_data = <<-EOF
+              #!/bin/bash
+              yum -y install httpd
+              mkdir -p /var/www/html/api
+              echo "Hello, from auto-scaling group nodejs server" > /var/www/html/api/index.html
+              service httpd start
+              chkconfig httpd on
+              EOF
+
+    lifecycle {
+        create_before_destroy = true
+    }
+}
+
+# create nodejs server autoscaling group
+resource "aws_autoscaling_group" "nodejs-server-asg" {
+    name                 = "nodejs-server-asg"
+    launch_configuration = aws_launch_configuration.nodejs-web-asg-launch-config.name
+    vpc_zone_identifier = [
+        element(aws_subnet.private-subnet.*.id, 0),
+        element(aws_subnet.private-subnet.*.id, 1)
+    ]
+    target_group_arns    = ["${aws_alb_target_group.nodejs-server-alb-tg.arn}"]
+    health_check_type    = "ELB"
+    min_size         = 1
+    max_size         = 3
+    desired_capacity = 2
+    tag {
+        key                 = "Name"
+        value               = "nodejs-server-asg"
+        propagate_at_launch = true
+    }
+}
