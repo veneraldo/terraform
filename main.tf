@@ -159,76 +159,87 @@ resource "aws_db_instance" "rds-mysql" {
     db_subnet_group_name = "rds-db-subnet-group"
     vpc_security_group_ids  = ["${aws_security_group.rds-mysql-sg.id}"]
 }
+
+# create redis cluster
+resource "aws_elasticache_cluster" "venerms-redis-cluster" {
+    cluster_id  = "venerms-redis-cluster"
+    engine  = "redis"
+    node_type  = "cache.t3.micro"
+    num_cache_nodes  = 1
+    parameter_group_name = "default.redis5.0"
+    engine_version  = "5.0.6"
+    port = 6379
+}
 */
 
-resource "aws_elasticache_cluster" "venerms-redis-cluster" {
-    cluster_id           = "venerms-redis-cluster"
-    engine               = "redis"
-    node_type            = "cache.m4.large"
-    num_cache_nodes      = 1
-    parameter_group_name = "default.redis3.2"
-    engine_version       = "3.2.10"
-    port                 = 6379
-}
-
-# create alb security group
-resource "aws_security_group" "venerms-alb-sg" {
-    name   = "venerms-alb-sg"
+# create nginx proxy alb security group
+resource "aws_security_group" "nginx-proxy-alb-sg" {
+    name   = "nginx-proxy-alb-sg"
     vpc_id = aws_vpc.main.id
 }
 
-# create alb sg inbound rule for ssh
+# create nginx proxy alb sg inbound rule for ssh
 resource "aws_security_group_rule" "inbound-ssh" {
     from_port         = 22
     protocol          = "tcp"
-    security_group_id = aws_security_group.venerms-alb-sg.id
+    security_group_id = aws_security_group.nginx-proxy-alb-sg.id
     to_port           = 22
     type              = "ingress"
     cidr_blocks       = ["0.0.0.0/0"]
 }
 
-# create alb sg inbound rule for http
+# create nginx proxy alb sg inbound rule for http
 resource "aws_security_group_rule" "inbound-http" {
     from_port         = 80
     protocol          = "tcp"
-    security_group_id = aws_security_group.venerms-alb-sg.id
+    security_group_id = aws_security_group.nginx-proxy-alb-sg.id
     to_port           = 80
     type              = "ingress"
     cidr_blocks       = ["0.0.0.0/0"]
 }
 
-# create alb sg outbound rule for outbound
+# create nginx proxy alb sg inbound rule for https
+resource "aws_security_group_rule" "inbound-https" {
+    from_port         = 443
+    protocol          = "tcp"
+    security_group_id = aws_security_group.nginx-proxy-alb-sg.id
+    to_port           = 443
+    type              = "ingress"
+    cidr_blocks       = ["0.0.0.0/0"]
+}
+
+# create nginx proxy alb sg outbound rule for outbound
 resource "aws_security_group_rule" "outbound-all" {
     from_port         = 0
     protocol          = "-1"
-    security_group_id = aws_security_group.venerms-alb-sg.id
+    security_group_id = aws_security_group.nginx-proxy-alb-sg.id
     to_port           = 0
     type              = "egress"
     cidr_blocks       = ["0.0.0.0/0"]
 }
 
-# create internet-facing alb
-resource "aws_alb" "venerms-alb" {
-    name = "venerms-alb"
+# create internet-facing nginx proxy alb
+resource "aws_alb" "nginx-proxy-alb" {
+    name = "nginx-proxy-alb"
     subnets = [
-        element(aws_subnet.private-subnet.*.id, 0),
-        element(aws_subnet.private-subnet.*.id, 1)
+        element(aws_subnet.public-subnet.*.id, 0),
+        element(aws_subnet.public-subnet.*.id, 1)
     ]
-    security_groups = ["${aws_security_group.venerms-alb-sg.id}"]
+    security_groups = ["${aws_security_group.nginx-proxy-alb-sg.id}"]
     internal = "false"
     tags = {
-        Name = "venerms-alb"
+        Name = "nginx-proxy-alb"
     }
 }
 
-# create target group for alb
-resource "aws_alb_target_group" "venerms-alb-tg" {
-    name     = "venerms-alb-tg"
+# create target group for nginx server
+resource "aws_alb_target_group" "nginx-server-alb-tg" {
+    name     = "nginx-server-alb-tg"
     port     = "80"
     protocol = "HTTP"
     vpc_id   = aws_vpc.main.id
     tags = {
-        name = "venerms-alb-tg"
+        name = "nginx-server-alb-tg"
     }
     health_check {
         healthy_threshold   = 3
@@ -240,40 +251,62 @@ resource "aws_alb_target_group" "venerms-alb-tg" {
     }
 }
 
-# create alb listener
-resource "aws_alb_listener" "venerms-alb-listener" {
-    load_balancer_arn = aws_alb.venerms-alb.arn
+# create target group for nodejs server
+resource "aws_alb_target_group" "nodejs-server-alb-tg" {
+    name     = "nodejs-server-alb-tg"
+    port     = "80"
+    protocol = "HTTP"
+    vpc_id   = aws_vpc.main.id
+    tags = {
+        name = "nodejs-server-alb-tg"
+    }
+    health_check {
+        healthy_threshold   = 3
+        unhealthy_threshold = 10
+        timeout             = 5
+        interval            = 10
+        path                = "/"  // may change to /api if needed
+        port                = "80"
+    }
+}
+
+# create nginx proxy alb listener
+resource "aws_alb_listener" "nginx-proxy-alb-listener" {
+    load_balancer_arn = aws_alb.nginx-proxy-alb.arn
     port              = "80"
     protocol          = "HTTP"
 
     default_action {
-        target_group_arn = aws_alb_target_group.venerms-alb-tg.arn
+        target_group_arn = aws_alb_target_group.nginx-server-alb-tg.arn
         type  = "forward"
     }
 }
+# to do create listener for https with certificate
 
-# create listener rule
-resource "aws_alb_listener_rule" "listener-rule" {
-    depends_on   = [aws_alb_target_group.venerms-alb-tg]
-    listener_arn = aws_alb_listener.venerms-alb-listener.arn
+
+# create nginx proxy listener rule
+resource "aws_alb_listener_rule" "nginx-proxy-listener-rule" {
+    depends_on   = [aws_alb_target_group.nodejs-server-alb-tg]
+    listener_arn = aws_alb_listener.nginx-proxy-alb-listener.arn
     action {
         type   = "forward"
-        target_group_arn = aws_alb_target_group.venerms-alb-tg.id
+        target_group_arn = aws_alb_target_group.nodejs-server-alb-tg.id
     }
     condition {
         path_pattern {
-        values = ["*images*"]
+        values = ["*api*"]
         }
     }
 }
 
+/*
 # create listener rule
-resource "aws_alb_listener_rule" "listener-rule1" {
-    depends_on   = [aws_alb_target_group.venerms-alb-tg]
-    listener_arn = aws_alb_listener.venerms-alb-listener.arn
+resource "aws_alb_listener_rule" "nginx-proxy-listener-rule1" {
+    depends_on   = [aws_alb_target_group.nginx-proxy-alb-tg]
+    listener_arn = aws_alb_listener.nginx-proxy-alb-listener.arn
     action {
         type  = "forward"
-        target_group_arn = aws_alb_target_group.venerms-alb-tg.id
+        target_group_arn = aws_alb_target_group.nginx-proxy-alb-tg.id
     }
     condition {
         path_pattern {
@@ -282,11 +315,10 @@ resource "aws_alb_listener_rule" "listener-rule1" {
     }
 }
 
-
 resource "aws_instance" "nginx-reverse-proxy-instance" {
     ami                    = "ami-067f5c3d5a99edc80"
     instance_type          = "t2.micro"
-    key_name               = "vpc-prod"
+    key_name               = "venerms-key"
     vpc_security_group_ids = ["sg-0dabbfc42efb67652"]
     subnet_id              = "subnet-0e87d62c04db49b80"
     user_data              = file("nginx-install.sh")
@@ -294,13 +326,45 @@ resource "aws_instance" "nginx-reverse-proxy-instance" {
         Name = "nginx-reverse-proxy"
     }
 }
+*/
 
-//resource "aws_instance" "test-instance" { 
-  //ami = "ami-055d15d9cfddf7bd3" 
- // instance_type = "t2.micro" 
-  //tags = { 
-    //Name = "test-instance"  
-   // Owner = var.owner
- // } 
-//}
+# create launch configuration for nginx web server
+resource "aws_launch_configuration" "nginx-web-asg-launch-config" {
+    image_id        = "ami-07f179dc333499419"
+    instance_type   = "t3.micro"
+    security_groups = ["${aws_security_group.nginx-proxy-alb-sg.id}"]
+
+    user_data = <<-EOF
+              #!/bin/bash
+              yum -y install httpd
+              echo "Hello, from auto-scaling group nginx server" > /var/www/html/index.html
+              service httpd start
+              chkconfig httpd on
+              EOF
+
+    lifecycle {
+        create_before_destroy = true
+    }
+}
+
+# create nginx autoscaling group
+resource "aws_autoscaling_group" "nginx-server-asg" {
+    name                 = "nginx-server-asg"
+    launch_configuration = aws_launch_configuration.nginx-web-asg-launch-config.name
+    vpc_zone_identifier = [
+        element(aws_subnet.private-subnet.*.id, 0),
+        element(aws_subnet.private-subnet.*.id, 1)
+    ]
+    target_group_arns    = ["${aws_alb_target_group.nginx-server-alb-tg.arn}"]
+    health_check_type    = "ELB"
+    min_size         = 1
+    max_size         = 3
+    desired_capacity = 2
+
+    tag {
+        key                 = "Name"
+        value               = "nginx-server-asg"
+        propagate_at_launch = true
+    }
+}
 
